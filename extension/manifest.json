@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "ChatGPT Mac Traffic Light",
+  "version": "1.0.0",
+  "description": "将 ChatGPT 网页执行状态同步到 Mac 菜单栏；不读取或上传聊天内容。",
+  "permissions": [],
+  "host_permissions": ["http://127.0.0.1:18765/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [{
+    "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"],
+    "js": ["content.js"],
+    "run_at": "document_idle"
+  }]
+}

@@ -1,0 +1,84 @@
+# ChatGPT / Codex Mac Traffic Light
+
+macOS 菜单栏显示 Codex 桌面版本地会话和 ChatGPT 网页状态：🟡 执行中、🔴 等待授权 / 工具返回、🟢 空闲 / 本轮结束、⚪ 未连接。
+
+## 安装
+
+系统要求：macOS 12+、Apple Command Line Tools、Python 3。Codex 需要支持生命周期 hooks 的版本；只监测 Codex 时不需要 Chrome 扩展。
+
+```bash
+xcode-select --install   # 如果已经安装可跳过
+cd /Users/gaoxy/dev/chatgpt-traffic-light
+bash install.sh
+open ~/Applications/GPTTrafficLight.app
+```
+
+升级时先从菜单退出旧的状态灯，再重新安装和启动。
+
+### Codex 桌面版
+
+安装器会向 `${CODEX_HOME:-~/.codex}/hooks.json` 合并本应用的 hooks，保留原有 hooks，并在修改前生成 `.traffic-light-backup-时间戳` 备份。不会修改已有 hooks 的信任设置。
+
+1. 点击状态灯菜单的“Codex 连接 / 授权说明…”→“打开 Codex 设置”，进入 Hooks（生命周期钩子）。在用户配置中找到命令指向 `~/.gpt-traffic-light/codex-hook` 的 8 项 hooks，审核后逐项信任；如未显示，点击 `Reload hooks`。CLI 中也可执行 `/hooks` 审核。只需信任本状态灯的命令。新版 Codex 要求信任新的或发生变化的 hook 定义，未信任的 hooks 不会执行。
+2. 重新打开或新建一个**本地会话**，发送消息后观察状态灯。已经执行中的旧任务不会自动补发此前的事件。
+3. 菜单分别显示 Codex 和浏览器状态；“打开 Codex”可以回到桌面应用。
+
+“打开 Codex”只唤起应用，不会自动信任 hooks。程序会优先查找已运行或已注册的 Codex，也兼容 `/Applications/Codex.app`、`/Applications/ChatGPT.app` 和 `~/Applications` 下具有 Codex Bundle ID 的应用；启动失败会显示错误。Codex 设置深链只打开设置首页，需自行进入 Hooks。
+
+事件映射：
+
+| Codex 事件 | 状态 |
+| --- | --- |
+| `SessionStart` | 会话连接；保留已有执行状态 |
+| `UserPromptSubmit` / `PreToolUse` / `PostToolUse` | 🟡 执行中 |
+| `PermissionRequest` | 🔴 等待授权 / 对应工具返回 |
+| `Stop` / `Interrupt` | 🟢 本轮结束 / 已中断 |
+| `SessionEnd` / Codex 进程退出 | 移除会话；没有其他来源时 ⚪ |
+
+多个会话汇总优先级：🔴 > 🟡 > 🟢 > ⚪。一个会话结束不会掩盖另一个仍在执行的会话。没有收到任何 Codex hook 时显示离线，不把“未接入”当作空闲。
+
+状态记录位于 `~/.gpt-traffic-light/codex-sessions`，仅包含进程标识、状态、轮次标识和授权请求摘要哈希，不保存提示词、命令、工具输出或回答。记录按会话隔离，并检查进程启动时间，避免崩溃或 PID 复用造成残留状态。
+
+### ChatGPT 网页版（可选）
+
+进入 Chrome `chrome://extensions`，启用开发者模式，选择“加载已解压的扩展程序”，加载：
+
+`~/.gpt-traffic-light/extension`
+
+在 Chrome 文件选择器中可使用 `Command + Shift + G` 粘贴路径。打开或刷新 `https://chatgpt.com`。
+
+- 🟡 页面检测到停止生成按钮。
+- 🔴 页面检测到可见授权 / 确认对话框（启发式）。
+- 🟢 扩展连接正常，没有检测到生成或确认请求。
+- ⚪ 12 秒未收到扩展心跳。
+
+网页选择器可能随 ChatGPT 更新失效，必要时更新 `extension/content.js` 并重新加载扩展及网页。网页状态通过 `127.0.0.1:18765` 和安装时生成的随机令牌传输，不传输会话正文或 Cookie。
+
+## 登录时启动
+
+在 macOS“系统设置 → 通用 → 登录项”中添加 `~/Applications/GPTTrafficLight.app`。
+
+## 卸载
+
+退出状态灯后执行 `bash uninstall.sh`。脚本仅从 Codex 配置中移除本应用添加的 hooks，保留其他 hooks；然后删除应用和本应用数据。Chrome 扩展和登录项需自行移除。
+
+## 验证
+
+```bash
+xcrun swiftc -O -parse-as-library mac/TrafficLight.swift mac/CodexMonitor.swift -framework AppKit -o /tmp/GPTTrafficLight
+xcrun swiftc -O -parse-as-library mac/CodexMonitor.swift tests/CodexMonitorTests.swift -o /tmp/CodexMonitorTests
+/tmp/CodexMonitorTests
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py'
+bash -n install.sh uninstall.sh
+```
+
+自动化验证覆盖生命周期、并行会话、多个授权、旧轮次回调、中断、失效进程及配置合并；实际 Codex 回调和菜单栏显示仍需安装、信任 hooks 后验证。
+
+## 限制
+
+- Codex 接入依据[官方生命周期 hooks](https://learn.chatgpt.com/docs/hooks)，不读取桌面窗口，也不依赖网页按钮；无需辅助功能或屏幕录制权限。
+- 监测的是本机执行的 Codex 会话。使用相同用户 hooks 的 CLI / IDE 本地会话也会计入；远程主机或云端运行的任务不在本机覆盖范围内。
+- `Stop` 表示本轮停止，不保证任务成功。其他 hook 让 Codex 继续执行时，后续事件会再次更新状态。
+- 授权被允许或拒绝后，没有独立的“授权弹窗已关闭”事件。红灯在对应工具的 `PostToolUse` 或本轮结束 / 中断时清除；因此批准长时间命令后，红灯可能持续到命令返回。其他 hooks 自动批准的请求也可能短暂触发红灯。
+- 普通提问、所有等待用户输入的控件、远程审批等不保证触发 `PermissionRequest`；红灯不覆盖全部等待场景。
+- 只支持带有上述 hooks 的 Codex 版本；如果 hooks 被禁用、未信任或被组织策略限制，菜单会保持未连接。
