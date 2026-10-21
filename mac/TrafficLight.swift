@@ -9,6 +9,8 @@ final class StatusApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var item: NSStatusItem!
     private var detail: NSMenuItem!
     private var codexDetail: NSMenuItem!
+    private var desktopDetail: NSMenuItem!
+    private let desktopStatus = CodexDesktopStatus()
     private var usageHeading: NSMenuItem!
     private var usageRefresh: NSMenuItem!
     private var usageRows = [NSMenuItem]()
@@ -27,6 +29,9 @@ final class StatusApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         codexDetail = NSMenuItem(title: "等待 Codex 连接", action: nil, keyEquivalent: "")
         codexDetail.isEnabled = false
         menu.addItem(codexDetail)
+        desktopDetail = NSMenuItem(title: "等待 Codex 实时状态", action: nil, keyEquivalent: "")
+        desktopDetail.isEnabled = false
+        menu.addItem(desktopDetail)
         detail = NSMenuItem(title: "等待 Chrome 扩展连接", action: nil, keyEquivalent: "")
         detail.isEnabled = false
         menu.addItem(detail)
@@ -63,7 +68,8 @@ final class StatusApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func refresh() {
         let alive = Date().timeIntervalSince(lastUpdate) < 12
-        let codex = CodexMonitor.snapshot()
+        desktopStatus.startIfNeeded()
+        let codex = CodexMonitor.snapshot(desktopStates: desktopStatus.states)
         let states = [codex.state, alive ? state : "offline"]
         let label: String
         if states.contains("attention") { label = "🔴" }
@@ -74,11 +80,14 @@ final class StatusApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item.button?.title = "\(label) GPT \(usage.summary(now: now))"
         item.button?.font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
         codexDetail.title = codex.detail
+        desktopDetail.title = desktopStatus.detail
         detail.title = alive ? source : "离线：未收到浏览器心跳"
-        item.button?.toolTip = "\(codex.detail)\n\(detail.title)\nCodex 剩余：\(usage.summary(now: now))\n\(usage.notice(now: now))"
+        item.button?.toolTip = "\(codex.detail)\n\(desktopDetail.title)\n\(detail.title)\nCodex 剩余：\(usage.summary(now: now))\n\(usage.notice(now: now))"
     }
 
     func menuWillOpen(_ menu: NSMenu) { updateUsageMenu() }
+
+    func applicationWillTerminate(_ notification: Notification) { desktopStatus.stop() }
 
     @objc private func refreshUsage() {
         guard !usage.isLoading else { return }

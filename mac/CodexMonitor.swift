@@ -9,6 +9,7 @@ struct CodexSession: Codable {
     var state: String
     var turnID: String?
     var permissions: Set<String>
+    var sessionID: String? = nil
 }
 
 struct CodexSnapshot {
@@ -67,6 +68,7 @@ enum CodexMonitor {
             }
             var session = previous.flatMap { $0.pid == pid && $0.processStart == start ? $0 : nil }
                 ?? CodexSession(pid: pid, processStart: start, state: "idle", permissions: [])
+            session.sessionID = id
             let turn = input["turn_id"] as? String
             // Ignore delayed tool results from an older turn.
             if ["PostToolUse", "Stop", "Interrupt"].contains(event),
@@ -74,7 +76,13 @@ enum CodexMonitor {
             if event == "PostToolUse", session.state == "idle", session.turnID != nil { return }
             if let turn = turn { session.turnID = turn }
             let tool = input["tool_name"] as? String ?? ""
-            let args = input["tool_input"] ?? NSNull()
+            var args = input["tool_input"] ?? NSNull()
+            // Approval input may add a description which is absent from PostToolUse.
+            // For shell/edit tools, match the actual command rather than approval-only metadata.
+            if ["Bash", "apply_patch"].contains(tool),
+               let command = (args as? [String: Any])?["command"] as? String {
+                args = ["command": command]
+            }
             let encoded = try JSONSerialization.data(withJSONObject: ["name": tool, "input": args], options: [.sortedKeys])
             let permissionKey = digest(encoded)
             switch event {
@@ -99,7 +107,7 @@ enum CodexMonitor {
         }
     }
 
-    static func snapshot() -> CodexSnapshot {
+    static func snapshot(desktopStates: [String: String] = [:]) -> CodexSnapshot {
         guard FileManager.default.fileExists(atPath: directory.path) else {
             return CodexSnapshot(state: "offline", detail: "Codex：等待 hooks 连接（安装后请审核并信任）")
         }
@@ -107,21 +115,32 @@ enum CodexMonitor {
             return try withLock {
                 let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
                 var sessions = [CodexSession]()
+                var unconfirmed = 0
                 for file in files where file.pathExtension == "json" {
                     let session = (try? Data(contentsOf: file)).flatMap { try? JSONDecoder().decode(CodexSession.self, from: $0) }
-                    guard let session = session, processStart(session.pid) == session.processStart else {
+                    guard var session = session, processStart(session.pid) == session.processStart else {
                         try? FileManager.default.removeItem(at: file)
                         continue
                     }
-                    sessions.append(session)
+                    if let actual = desktopStates[file.deletingPathExtension().lastPathComponent],
+                       ["running", "attention", "idle", "offline"].contains(actual) {
+                        session.state = actual
+                    } else if session.state == "attention" {
+                        // Hooks cannot observe when the approval dialog is dismissed.
+                        // Only a confirmed desktop waitingOnApproval status may turn the light red.
+                        session.state = "running"
+                        unconfirmed += 1
+                    }
+                    if session.state != "offline" { sessions.append(session) }
                 }
                 let attention = sessions.filter { $0.state == "attention" }.count
                 let running = sessions.filter { $0.state == "running" }.count
                 if attention > 0 {
-                    return CodexSnapshot(state: "attention", detail: "Codex：\(attention) 个会话等待授权 / 工具返回")
+                    return CodexSnapshot(state: "attention", detail: "Codex：\(attention) 个会话等待授权确认")
                 }
                 if running > 0 {
-                    return CodexSnapshot(state: "running", detail: "Codex：\(running) 个会话执行中")
+                    let note = unconfirmed > 0 ? "（\(unconfirmed) 个会话授权状态未确认）" : ""
+                    return CodexSnapshot(state: "running", detail: "Codex：\(running) 个会话思考 / 执行中\(note)")
                 }
                 if !sessions.isEmpty {
                     return CodexSnapshot(state: "idle", detail: "Codex：空闲 / 本轮执行结束（\(sessions.count) 个会话）")

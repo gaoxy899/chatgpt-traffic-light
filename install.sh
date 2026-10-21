@@ -5,7 +5,7 @@ APP="$HOME/Applications/GPTTrafficLight.app"
 EXT="$HOME/.gpt-traffic-light/extension"
 BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/gpt-traffic-light-build.XXXXXX")"
 trap 'rm -rf "$BUILD_DIR"' EXIT
-mkdir -p "$APP/Contents/MacOS" "$EXT"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$EXT"
 TOKEN_FILE="$HOME/.gpt-traffic-light/token"
 if [ ! -f "$TOKEN_FILE" ]; then
   python3 -c 'import secrets; print(secrets.token_hex(24))' > "$TOKEN_FILE"
@@ -33,7 +33,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </dict></plist>
 PLIST
 printf '正在编译 macOS 菜单栏程序...\n'
-xcrun swiftc -O -parse-as-library "$BUILD_DIR/TrafficLight.swift" "$BASE/mac/CodexMonitor.swift" "$BASE/mac/CodexUsage.swift" -framework AppKit -o "$BUILD_DIR/GPTTrafficLight"
+xcrun swiftc -O -parse-as-library "$BUILD_DIR/TrafficLight.swift" "$BASE/mac/CodexMonitor.swift" "$BASE/mac/CodexUsage.swift" "$BASE/mac/CodexDesktopStatus.swift" -framework AppKit -o "$BUILD_DIR/GPTTrafficLight"
+cp "$BASE/scripts/codex_desktop_status.py" "$APP/Contents/Resources/codex_desktop_status.py"
 cp "$BUILD_DIR/GPTTrafficLight" "$APP/Contents/MacOS/GPTTrafficLight.new"
 mv -f "$APP/Contents/MacOS/GPTTrafficLight.new" "$APP/Contents/MacOS/GPTTrafficLight"
 cp "$BUILD_DIR/GPTTrafficLight" "$HOME/.gpt-traffic-light/codex-hook.new"

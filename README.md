@@ -1,6 +1,6 @@
 # ChatGPT / Codex Mac Traffic Light
 
-macOS 菜单栏显示 Codex 桌面版本地会话和 ChatGPT 网页状态：🟡 执行中、🔴 等待授权 / 工具返回、🟢 空闲 / 本轮结束、⚪ 未连接。
+macOS 菜单栏显示 Codex 桌面版本地会话和 ChatGPT 网页状态：🟡 思考 / 执行中、🔴 等待授权确认、🟢 空闲 / 本轮结束、⚪ 未连接。
 
 同时显示 Codex **剩余额度**，例如 `🟡 GPT 5h 72% · 周 46%`。窗口名称按服务端返回的实际时长生成；这里的百分比属于 Codex 配额，不代表 ChatGPT 网页聊天额度。
 
@@ -27,19 +27,25 @@ open ~/Applications/GPTTrafficLight.app
 
 “打开 Codex”只唤起应用，不会自动信任 hooks。程序会优先查找已运行或已注册的 Codex，也兼容 `/Applications/Codex.app`、`/Applications/ChatGPT.app` 和 `~/Applications` 下具有 Codex Bundle ID 的应用；启动失败会显示错误。Codex 设置深链只打开设置首页，需自行进入 Hooks。
 
+桌面版授权状态通过本机 `${CODEX_HOME:-~/.codex}/ipc/ipc.sock` 的只读状态订阅核对。只有实时状态明确包含 `waitingOnApproval` 才亮红灯；用户批准后，只要该标记清除，就恢复黄灯，不等待命令执行结束。thinking、生成回答及已获准的工具执行均为黄灯。
+
+此本机 IPC 适配使用桌面版内部状态流版本 11，并非公开稳定 API。程序不会启动第二个后端、接管会话或批准请求。连接中断、协议不兼容或数据超过 6 秒未更新时立即停止采用旧状态；下拉菜单会显示“实时通道未连接”。此时 hooks 继续提供执行状态，但未确认的授权线索只显示黄灯及“授权状态未确认”，避免误报红灯。CLI / IDE 若没有桌面会话所有者，同样只提供 hooks 执行状态。
+
 事件映射：
 
 | Codex 事件 | 状态 |
 | --- | --- |
 | `SessionStart` | 会话连接；保留已有执行状态 |
 | `UserPromptSubmit` / `PreToolUse` / `PostToolUse` | 🟡 执行中 |
-| `PermissionRequest` | 🔴 等待授权 / 对应工具返回 |
+| `PermissionRequest` | 记录授权线索；实时状态确认等待授权后才 🔴 |
 | `Stop` / `Interrupt` | 🟢 本轮结束 / 已中断 |
 | `SessionEnd` / Codex 进程退出 | 移除会话；没有其他来源时 ⚪ |
 
 多个会话汇总优先级：🔴 > 🟡 > 🟢 > ⚪。一个会话结束不会掩盖另一个仍在执行的会话。没有收到任何 Codex hook 时显示离线，不把“未接入”当作空闲。
 
-状态记录位于 `~/.gpt-traffic-light/codex-sessions`，仅包含进程标识、状态、轮次标识和授权请求摘要哈希，不保存提示词、命令、工具输出或回答。记录按会话隔离，并检查进程启动时间，避免崩溃或 PID 复用造成残留状态。
+状态记录位于 `~/.gpt-traffic-light/codex-sessions`，仅包含进程标识、会话标识、状态、轮次标识和授权请求摘要哈希，不保存提示词、命令、工具输出或回答。授权请求与工具返回按实际命令匹配，忽略仅在授权阶段附带的说明。记录按会话隔离，并检查进程启动时间，避免崩溃或 PID 复用造成残留状态。
+
+状态订阅可能携带会话快照；辅助进程只保留运行状态，向菜单栏进程输出会话哈希与状态摘要，其余内容丢弃，不写盘、不记录日志。退出状态灯会关闭订阅及辅助进程。升级前的旧记录会在收到下一条 hook 时补充会话标识，开始实时核对。
 
 ### Codex 剩余额度
 
@@ -81,9 +87,11 @@ open ~/Applications/GPTTrafficLight.app
 ## 验证
 
 ```bash
-xcrun swiftc -O -parse-as-library mac/TrafficLight.swift mac/CodexMonitor.swift mac/CodexUsage.swift -framework AppKit -o /tmp/GPTTrafficLight
+xcrun swiftc -O -parse-as-library mac/TrafficLight.swift mac/CodexMonitor.swift mac/CodexUsage.swift mac/CodexDesktopStatus.swift -framework AppKit -o /tmp/GPTTrafficLight
 xcrun swiftc -O -parse-as-library mac/CodexMonitor.swift tests/CodexMonitorTests.swift -o /tmp/CodexMonitorTests
 /tmp/CodexMonitorTests
+xcrun swiftc -O -parse-as-library mac/CodexDesktopStatus.swift tests/CodexDesktopStatusTests.swift -o /tmp/CodexDesktopStatusTests
+/tmp/CodexDesktopStatusTests
 xcrun swiftc -O -parse-as-library mac/CodexUsage.swift tests/CodexUsageTests.swift -o /tmp/CodexUsageTests
 /tmp/CodexUsageTests
 # 可选：真实只读查询，仅输出配额类别、剩余百分比和重置时间
@@ -92,13 +100,13 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py'
 bash -n install.sh uninstall.sh
 ```
 
-自动化验证覆盖生命周期、并行会话、多个授权、旧轮次回调、中断、失效进程及配置合并；用量测试覆盖剩余比例、空值、多个配额类别、旧数据与重置标记、协议握手、超时及子进程清理。实际 Codex 回调和菜单栏显示仍需安装、信任 hooks 后验证；额度的真实读取可通过上述 `--live` 单独验证。
+自动化验证覆盖生命周期、并行会话、多个授权、旧轮次回调、中断、失效进程及配置合并；实时状态测试覆盖 thinking、等待授权、批准后工具尚未返回、乱序 / 丢失状态更新、版本不兼容、只读订阅及正文不输出。用量测试覆盖剩余比例、空值、多个配额类别、旧数据与重置标记、协议握手、超时及子进程清理。实际授权弹窗及菜单栏显示仍需安装、信任 hooks 后验证；额度的真实读取可通过上述 `--live` 单独验证。
 
 ## 限制
 
 - Codex 接入依据[官方生命周期 hooks](https://learn.chatgpt.com/docs/hooks)，不读取桌面窗口，也不依赖网页按钮；无需辅助功能或屏幕录制权限。
 - 监测的是本机执行的 Codex 会话。使用相同用户 hooks 的 CLI / IDE 本地会话也会计入；远程主机或云端运行的任务不在本机覆盖范围内。
 - `Stop` 表示本轮停止，不保证任务成功。其他 hook 让 Codex 继续执行时，后续事件会再次更新状态。
-- 授权被允许或拒绝后，没有独立的“授权弹窗已关闭”事件。红灯在对应工具的 `PostToolUse` 或本轮结束 / 中断时清除；因此批准长时间命令后，红灯可能持续到命令返回。其他 hooks 自动批准的请求也可能短暂触发红灯。
-- 普通提问、所有等待用户输入的控件、远程审批等不保证触发 `PermissionRequest`；红灯不覆盖全部等待场景。
+- Hooks 没有独立的“授权弹窗已关闭”事件，因此红灯依据桌面实时状态确认，不能仅凭 `PermissionRequest` 推断。状态灯约每 2 秒刷新显示。
+- 普通提问和等待用户补充内容不等于授权确认，不自动亮红灯；远程审批不在本机实时核对范围内。
 - 只支持带有上述 hooks 的 Codex 版本；如果 hooks 被禁用、未信任或被组织策略限制，菜单会保持未连接。
