@@ -33,7 +33,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </dict></plist>
 PLIST
 printf '正在编译 macOS 菜单栏程序...\n'
-xcrun swiftc -O -parse-as-library "$BUILD_DIR/TrafficLight.swift" "$BASE/mac/CodexMonitor.swift" -framework AppKit -o "$BUILD_DIR/GPTTrafficLight"
+xcrun swiftc -O -parse-as-library "$BUILD_DIR/TrafficLight.swift" "$BASE/mac/CodexMonitor.swift" "$BASE/mac/CodexUsage.swift" -framework AppKit -o "$BUILD_DIR/GPTTrafficLight"
 cp "$BUILD_DIR/GPTTrafficLight" "$APP/Contents/MacOS/GPTTrafficLight.new"
 mv -f "$APP/Contents/MacOS/GPTTrafficLight.new" "$APP/Contents/MacOS/GPTTrafficLight"
 cp "$BUILD_DIR/GPTTrafficLight" "$HOME/.gpt-traffic-light/codex-hook.new"

@@ -2,6 +2,8 @@
 
 macOS 菜单栏显示 Codex 桌面版本地会话和 ChatGPT 网页状态：🟡 执行中、🔴 等待授权 / 工具返回、🟢 空闲 / 本轮结束、⚪ 未连接。
 
+同时显示 Codex **剩余额度**，例如 `🟡 GPT 5h 72% · 周 46%`。窗口名称按服务端返回的实际时长生成；这里的百分比属于 Codex 配额，不代表 ChatGPT 网页聊天额度。
+
 ## 安装
 
 系统要求：macOS 12+、Apple Command Line Tools、Python 3。Codex 需要支持生命周期 hooks 的版本；只监测 Codex 时不需要 Chrome 扩展。
@@ -39,6 +41,20 @@ open ~/Applications/GPTTrafficLight.app
 
 状态记录位于 `~/.gpt-traffic-light/codex-sessions`，仅包含进程标识、状态、轮次标识和授权请求摘要哈希，不保存提示词、命令、工具输出或回答。记录按会话隔离，并检查进程启动时间，避免崩溃或 PID 复用造成残留状态。
 
+### Codex 剩余额度
+
+用量通过[官方 app-server 配额接口](https://learn.chatgpt.com/docs/app-server#6-rate-limits-chatgpt)读取，需要本机 Codex CLI 支持 `account/rateLimits/read`，并已使用 ChatGPT 账号登录。API Key / Bedrock 登录不提供该套餐配额。
+
+- 启动时查询，此后每 60 秒后台刷新；菜单内可点击“立即刷新用量”。查询不创建会话、不发送模型请求，单次最多等待约 15 秒。
+- 菜单栏优先显示 `codex` 配额的主、次窗口，其他类别放在下拉详情中。如果只有其他类别，菜单栏会带上类别标识，避免混淆。
+- 下拉详情显示剩余百分比、剩余进度条、重置时间及最近成功更新时间。时间使用本机时区。
+- 剩余不超过 10% 时加 `!`；查询失败、有超过 90 秒未更新的缓存，或已到重置时间时，用 `≈` 标记旧百分比。不会自动推算恢复为 100%。
+- 没有数据时显示 `--`，不会将查询失败当作 0%。网络失败时保留内存中的旧数据并标记；检测到未登录或不支持的登录方式时清除旧数据。
+- 额度独立于红黄绿灯，灯色仍只表示执行状态。额度可在没有连接生命周期 hooks 时单独读取。
+- 自动从运行中的 Codex 应用、标准应用目录和 PATH 查找 CLI。自定义安装可通过环境变量 `GPT_TRAFFIC_LIGHT_CODEX_BIN` 指定 CLI 的绝对路径；Finder 启动的应用不一定继承终端环境变量。
+
+本应用只在内存中保存配额摘要，不直接读取或保存登录令牌，也不记录账号信息或原始接口响应。登录凭据由 Codex CLI 自身管理。
+
 ### ChatGPT 网页版（可选）
 
 进入 Chrome `chrome://extensions`，启用开发者模式，选择“加载已解压的扩展程序”，加载：
@@ -65,14 +81,18 @@ open ~/Applications/GPTTrafficLight.app
 ## 验证
 
 ```bash
-xcrun swiftc -O -parse-as-library mac/TrafficLight.swift mac/CodexMonitor.swift -framework AppKit -o /tmp/GPTTrafficLight
+xcrun swiftc -O -parse-as-library mac/TrafficLight.swift mac/CodexMonitor.swift mac/CodexUsage.swift -framework AppKit -o /tmp/GPTTrafficLight
 xcrun swiftc -O -parse-as-library mac/CodexMonitor.swift tests/CodexMonitorTests.swift -o /tmp/CodexMonitorTests
 /tmp/CodexMonitorTests
+xcrun swiftc -O -parse-as-library mac/CodexUsage.swift tests/CodexUsageTests.swift -o /tmp/CodexUsageTests
+/tmp/CodexUsageTests
+# 可选：真实只读查询，仅输出配额类别、剩余百分比和重置时间
+/tmp/CodexUsageTests --live
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py'
 bash -n install.sh uninstall.sh
 ```
 
-自动化验证覆盖生命周期、并行会话、多个授权、旧轮次回调、中断、失效进程及配置合并；实际 Codex 回调和菜单栏显示仍需安装、信任 hooks 后验证。
+自动化验证覆盖生命周期、并行会话、多个授权、旧轮次回调、中断、失效进程及配置合并；用量测试覆盖剩余比例、空值、多个配额类别、旧数据与重置标记、协议握手、超时及子进程清理。实际 Codex 回调和菜单栏显示仍需安装、信任 hooks 后验证；额度的真实读取可通过上述 `--live` 单独验证。
 
 ## 限制
 

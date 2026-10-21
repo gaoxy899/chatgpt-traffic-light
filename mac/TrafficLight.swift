@@ -5,10 +5,14 @@ import Darwin
 private let portNumber: UInt16 = 18765
 private let sharedKey = "__TOKEN__"
 
-final class StatusApp: NSObject, NSApplicationDelegate {
+final class StatusApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var item: NSStatusItem!
     private var detail: NSMenuItem!
     private var codexDetail: NSMenuItem!
+    private var usageHeading: NSMenuItem!
+    private var usageRefresh: NSMenuItem!
+    private var usageRows = [NSMenuItem]()
+    private var usage = UsageDisplay()
     private var lastUpdate = Date.distantPast
     private var state = "offline"
     private var source = "未连接 Chrome"
@@ -18,10 +22,21 @@ final class StatusApp: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let menu = NSMenu()
+        menu.delegate = self
+        menu.autoenablesItems = false
         codexDetail = NSMenuItem(title: "等待 Codex 连接", action: nil, keyEquivalent: "")
+        codexDetail.isEnabled = false
         menu.addItem(codexDetail)
         detail = NSMenuItem(title: "等待 Chrome 扩展连接", action: nil, keyEquivalent: "")
+        detail.isEnabled = false
         menu.addItem(detail)
+        menu.addItem(.separator())
+        usageHeading = NSMenuItem(title: "Codex 剩余额度", action: nil, keyEquivalent: "")
+        usageHeading.isEnabled = false
+        menu.addItem(usageHeading)
+        usageRefresh = NSMenuItem(title: "立即刷新用量", action: #selector(refreshUsage), keyEquivalent: "")
+        usageRefresh.target = self
+        menu.addItem(usageRefresh)
         menu.addItem(.separator())
         let codex = NSMenuItem(title: "打开 Codex", action: #selector(openCodex), keyEquivalent: "")
         codex.target = self
@@ -37,7 +52,12 @@ final class StatusApp: NSObject, NSApplicationDelegate {
         menu.addItem(quit)
         item.menu = menu
         refresh()
-        Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.refresh() }
+        updateUsageMenu()
+        refreshUsage()
+        let statusTimer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in self?.refresh() }
+        RunLoop.main.add(statusTimer, forMode: .common)
+        let usageTimer = Timer(timeInterval: 60, repeats: true) { [weak self] _ in self?.refreshUsage() }
+        RunLoop.main.add(usageTimer, forMode: .common)
         DispatchQueue.global(qos: .utility).async { [weak self] in self?.serve() }
     }
 
@@ -50,10 +70,70 @@ final class StatusApp: NSObject, NSApplicationDelegate {
         else if states.contains("running") { label = "🟡" }
         else if states.contains("idle") { label = "🟢" }
         else { label = "⚪" }
-        item.button?.title = "\(label) GPT"
+        let now = Date()
+        item.button?.title = "\(label) GPT \(usage.summary(now: now))"
+        item.button?.font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
         codexDetail.title = codex.detail
         detail.title = alive ? source : "离线：未收到浏览器心跳"
-        item.button?.toolTip = "\(codex.detail)\n\(detail.title)"
+        item.button?.toolTip = "\(codex.detail)\n\(detail.title)\nCodex 剩余：\(usage.summary(now: now))\n\(usage.notice(now: now))"
+    }
+
+    func menuWillOpen(_ menu: NSMenu) { updateUsageMenu() }
+
+    @objc private func refreshUsage() {
+        guard !usage.isLoading else { return }
+        usage.isLoading = true
+        updateUsageMenu()
+        let workspace = NSWorkspace.shared
+        let apps = NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex")
+            .compactMap { $0.bundleURL }
+            + [workspace.urlForApplication(withBundleIdentifier: "com.openai.codex")].compactMap { $0 }
+        let executable = CodexUsageClient.executable(applicationURLs: apps)
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let result = CodexUsageClient.fetch(executable: executable)
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.usage.finish(result)
+                self.refresh()
+                self.updateUsageMenu()
+            }
+        }
+    }
+
+    private func updateUsageMenu() {
+        guard let menu = item.menu else { return }
+        usageRows.forEach { menu.removeItem($0) }
+        usageRows.removeAll()
+        let now = Date()
+        func row(_ text: String, secondary: Bool = false) {
+            let entry = NSMenuItem(title: text, action: nil, keyEquivalent: "")
+            entry.isEnabled = false
+            if secondary {
+                entry.attributedTitle = NSAttributedString(string: text, attributes: [
+                    .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor
+                ])
+            }
+            menu.insertItem(entry, at: menu.index(of: usageRefresh))
+            usageRows.append(entry)
+        }
+        if let snapshot = usage.snapshot {
+            for (id, bucket) in snapshot.response.buckets {
+                let title = bucket.limitName.flatMap { $0.isEmpty ? nil : $0 } ?? (id == "codex" ? "Codex" : id)
+                if snapshot.response.buckets.count > 1 || id != "codex" { row(title) }
+                if bucket.windows.isEmpty { row("暂无配额窗口数据") }
+                for (label, window) in bucket.windows {
+                    row("\(label) 剩余 \(window.percentage(stale: usage.isStale(now: now), now: now))  \(window.progressBar)")
+                    row("    \(window.resetDescription(now: now))", secondary: true)
+                }
+            }
+            if snapshot.response.buckets.isEmpty { row("暂无配额窗口数据") }
+            let formatter = DateFormatter()
+            formatter.dateFormat = "M月d日 HH:mm:ss"
+            row("更新于 \(formatter.string(from: snapshot.updatedAt))", secondary: true)
+        }
+        row(usage.notice(now: now), secondary: true)
+        usageRefresh.title = usage.isLoading ? "正在刷新用量…" : "立即刷新用量"
+        usageRefresh.isEnabled = !usage.isLoading
     }
 
     @objc private func openCodex() {
