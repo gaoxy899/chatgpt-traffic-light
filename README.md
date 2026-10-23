@@ -8,6 +8,8 @@ macOS 菜单栏显示 Codex 桌面版本地会话和 ChatGPT 网页状态：🟡
 
 系统要求：macOS 12+、Apple Command Line Tools、Python 3。Codex 需要支持生命周期 hooks 的版本；只监测 Codex 时不需要 Chrome 扩展。
 
+实时状态监测已由 Swift 原生实现，运行 App 不需要 Python；当前源码安装、卸载脚本仍使用 Python 3 配置 hooks 等安装数据。
+
 ```bash
 xcode-select --install   # 如果已经安装可跳过
 cd /Users/gaoxy/dev/chatgpt-traffic-light
@@ -31,6 +33,8 @@ open ~/Applications/GPTTrafficLight.app
 
 此本机 IPC 适配使用桌面版内部状态流版本 11，并非公开稳定 API。程序不会启动第二个后端、接管会话或批准请求。连接中断、协议不兼容或数据超过 6 秒未更新时立即停止采用旧状态；下拉菜单会显示“实时通道未连接”。此时 hooks 继续提供执行状态，但未确认的授权线索只显示黄灯及“授权状态未确认”，避免误报红灯。CLI / IDE 若没有桌面会话所有者，同样只提供 hooks 执行状态。
 
+旧会话没有响应时只延后该会话的查询，不断开其他正常订阅。程序优先接入执行中的会话，每轮最多发现一个会话，避免旧会话超时阻塞状态心跳；超时后等待 30 秒再重试。
+
 事件映射：
 
 | Codex 事件 | 状态 |
@@ -45,7 +49,7 @@ open ~/Applications/GPTTrafficLight.app
 
 状态记录位于 `~/.gpt-traffic-light/codex-sessions`，仅包含进程标识、会话标识、状态、轮次标识和授权请求摘要哈希，不保存提示词、命令、工具输出或回答。授权请求与工具返回按实际命令匹配，忽略仅在授权阶段附带的说明。记录按会话隔离，并检查进程启动时间，避免崩溃或 PID 复用造成残留状态。
 
-状态订阅可能携带会话快照；辅助进程只保留运行状态，向菜单栏进程输出会话哈希与状态摘要，其余内容丢弃，不写盘、不记录日志。退出状态灯会关闭订阅及辅助进程。升级前的旧记录会在收到下一条 hook 时补充会话标识，开始实时核对。
+状态订阅可能携带会话快照；应用内的 Swift 后台线程直接连接本机 Unix Socket，只保留运行状态，并以会话哈希与状态摘要更新菜单栏，其余内容丢弃，不写盘、不记录日志。没有 Python 辅助进程；退出状态灯会关闭 Socket 和订阅。后台线程超过 6 秒未更新摘要时，菜单栏停用旧状态。升级前的旧记录会在收到下一条 hook 时补充会话标识，开始实时核对。
 
 ### Codex 剩余额度
 
@@ -92,6 +96,8 @@ xcrun swiftc -O -parse-as-library mac/CodexMonitor.swift tests/CodexMonitorTests
 /tmp/CodexMonitorTests
 xcrun swiftc -O -parse-as-library mac/CodexDesktopStatus.swift tests/CodexDesktopStatusTests.swift -o /tmp/CodexDesktopStatusTests
 /tmp/CodexDesktopStatusTests
+# 可选：连接本机已有 Codex 会话，仅输出状态类别和会话数量
+/tmp/CodexDesktopStatusTests --live
 xcrun swiftc -O -parse-as-library mac/CodexUsage.swift tests/CodexUsageTests.swift -o /tmp/CodexUsageTests
 /tmp/CodexUsageTests
 # 可选：真实只读查询，仅输出配额类别、剩余百分比和重置时间

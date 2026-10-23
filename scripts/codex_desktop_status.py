@@ -20,6 +20,10 @@ STREAM_VERSION = 11
 MAX_FRAME = 16 * 1024 * 1024
 
 
+class RequestTimeout(TimeoutError):
+    """One unanswered discovery is not a failure of the IPC connection."""
+
+
 def traffic_state(status):
     if not isinstance(status, dict):
         return None
@@ -37,6 +41,7 @@ class StatusStream:
         self.owner = owner
         self.revision = None
         self.status = None
+        self.subscribed_at = time.monotonic()
 
     def accept(self, message, client_id):
         """False means the stream must be resubscribed before trusting it again."""
@@ -116,6 +121,7 @@ class Observer:
         self.wanted = {}
         self.last_emission = None
         self.emitted_at = 0
+        self.retry_after = {}
 
     def send(self, message):
         raw = json.dumps(message, separators=(",", ":")).encode()
@@ -152,7 +158,7 @@ class Observer:
             if message.get("type") == "response" and message.get("requestId") == request_id:
                 return message
             self.handle(message)
-        raise TimeoutError()
+        raise RequestTimeout()
 
     def follow(self, thread, owner, following):
         self.send({"type": "broadcast", "method": "thread-stream-following-changed", "version": 1,
@@ -173,32 +179,53 @@ class Observer:
             if stream and not stream.accept(message, self.client_id):
                 # Never keep an old red/green light across missing revisions or an incompatible schema.
                 self.streams.pop(thread)
+                self.retry_after[thread] = time.monotonic() + 30
                 self.follow(thread, stream.owner, False)
         elif method == "client-status-changed" and params.get("status") == "disconnected":
             self.streams = {t: s for t, s in self.streams.items() if s.owner != params.get("clientId")}
 
     def synchronize(self):
         wanted = {}
+        priority = {}
         for path in self.directory.glob("*.json"):
             try:
                 record = json.loads(path.read_text())
+                if not isinstance(record, dict):
+                    continue
                 thread = record.get("sessionID")
                 if isinstance(thread, str) and hashlib.sha256(thread.encode()).hexdigest() == path.stem:
+                    rank = (0 if record.get("state") in ("running", "attention") else 1,
+                            -path.stat().st_mtime)
                     wanted[thread] = path.stem
+                    priority[thread] = rank
             except (OSError, ValueError):
                 pass
         self.wanted = wanted
+        self.retry_after = {t: deadline for t, deadline in self.retry_after.items() if t in wanted}
+        now = time.monotonic()
         for thread in list(self.streams):
-            if thread not in wanted:
+            stream = self.streams[thread]
+            missing_snapshot = stream.status is None and now - stream.subscribed_at > 5
+            if thread not in wanted or missing_snapshot:
                 self.follow(thread, self.streams.pop(thread).owner, False)
-        for thread in wanted:
-            if thread in self.streams:
+                if missing_snapshot:
+                    self.retry_after[thread] = now + 30
+        for thread in sorted(wanted, key=priority.get):
+            if thread in self.streams or now < self.retry_after.get(thread, 0):
                 continue
-            result = self.request("thread-owner-discovery", {"hostId": "local", "conversationId": thread}, 1)
+            # Bound discovery work per pass so stale sessions cannot starve heartbeats
+            # or consume the native reader's six-second freshness window.
+            self.retry_after[thread] = time.monotonic() + 30
+            try:
+                result = self.request("thread-owner-discovery", {"hostId": "local", "conversationId": thread}, 1)
+            except RequestTimeout:
+                break
             owner = result.get("handledByClientId")
             if result.get("resultType") == "success" and isinstance(owner, str):
                 self.streams[thread] = StatusStream(owner)
+                self.retry_after.pop(thread, None)
                 self.follow(thread, owner, True)
+            break
 
     def connect(self):
         for path, is_socket in ((self.path.parent, False), (self.path, True)):

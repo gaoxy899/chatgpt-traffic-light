@@ -34,7 +34,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 PLIST
 printf '正在编译 macOS 菜单栏程序...\n'
 xcrun swiftc -O -parse-as-library "$BUILD_DIR/TrafficLight.swift" "$BASE/mac/CodexMonitor.swift" "$BASE/mac/CodexUsage.swift" "$BASE/mac/CodexDesktopStatus.swift" -framework AppKit -o "$BUILD_DIR/GPTTrafficLight"
-cp "$BASE/scripts/codex_desktop_status.py" "$APP/Contents/Resources/codex_desktop_status.py"
+# Monitoring is native Swift; remove the former runtime helper on upgrades.
+rm -f "$APP/Contents/Resources/codex_desktop_status.py"
 cp "$BUILD_DIR/GPTTrafficLight" "$APP/Contents/MacOS/GPTTrafficLight.new"
 mv -f "$APP/Contents/MacOS/GPTTrafficLight.new" "$APP/Contents/MacOS/GPTTrafficLight"
 cp "$BUILD_DIR/GPTTrafficLight" "$HOME/.gpt-traffic-light/codex-hook.new"

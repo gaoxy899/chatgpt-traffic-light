@@ -10,6 +10,7 @@ import struct
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("desktop_status", Path(__file__).resolve().parents[1] / "scripts/codex_desktop_status.py")
 status = importlib.util.module_from_spec(spec)
@@ -33,6 +34,45 @@ def patches(base, revision, values):
 
 
 class DesktopStatusTests(unittest.TestCase):
+    def test_unresponsive_old_session_does_not_reset_live_status(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for thread, state in [("live", "running"), ("old", "idle")]:
+                (root / (hashlib.sha256(thread.encode()).hexdigest() + ".json")).write_text(
+                    json.dumps({"sessionID": thread, "state": state}))
+            observer = status.Observer(Path("unused"), root)
+            stream = status.StatusStream("owner")
+            stream.status = {"type": "active", "activeFlags": []}
+            observer.streams["live"] = stream
+            with patch.object(observer, "request", side_effect=status.RequestTimeout()) as request:
+                observer.synchronize()
+                observer.synchronize()
+                self.assertEqual(request.call_count, 1, "unloaded sessions must back off")
+                self.assertEqual(observer.streams["live"].status, stream.status)
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    observer.emit(True)
+                summary = json.loads(output.getvalue())
+                self.assertTrue(summary["connected"])
+                self.assertEqual(list(summary["states"].values()), ["running"])
+
+    def test_active_sessions_are_discovered_first_with_bounded_work(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for thread, state in [("active", "running"), ("idle-1", "idle"), ("idle-2", "idle")]:
+                (root / (hashlib.sha256(thread.encode()).hexdigest() + ".json")).write_text(
+                    json.dumps({"sessionID": thread, "state": state}))
+            observer = status.Observer(Path("unused"), root)
+            with patch.object(observer, "request", return_value={"resultType": "success", "handledByClientId": "owner"}) as request, \
+                 patch.object(observer, "follow"):
+                observer.synchronize()
+                self.assertEqual(request.call_count, 1)
+                self.assertEqual(request.call_args.args[1]["conversationId"], "active")
+                observer.streams["active"].subscribed_at -= 6
+                observer.synchronize()
+                self.assertNotIn("active", observer.streams, "missing snapshots must not block subscription forever")
+                self.assertIn("active", observer.retry_after)
+
     def test_thinking_approval_and_approved_execution(self):
         stream = status.StatusStream("owner")
         self.assertTrue(stream.accept(snapshot(), "observer"))
