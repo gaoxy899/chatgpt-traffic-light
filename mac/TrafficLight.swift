@@ -4,6 +4,7 @@ import Darwin
 
 private let portNumber: UInt16 = 18765
 private let sharedKey = "__TOKEN__"
+private let browserConfigured = sharedKey != "__" + "TOKEN__"
 
 final class StatusApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var item: NSStatusItem!
@@ -11,6 +12,12 @@ final class StatusApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var codexDetail: NSMenuItem!
     private var desktopDetail: NSMenuItem!
     private let desktopStatus = CodexDesktopStatus()
+    private let hookInstaller = CodexHookInstaller()
+    private var hookStatus: NSMenuItem!
+    private var configureHooksItem: NSMenuItem!
+    private var removeHooksItem: NSMenuItem!
+    private var configuringHooks = false
+    private var hookStatusRevision = 0
     private var usageHeading: NSMenuItem!
     private var usageRefresh: NSMenuItem!
     private var usageRows = [NSMenuItem]()
@@ -34,7 +41,7 @@ final class StatusApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(desktopDetail)
         detail = NSMenuItem(title: "等待 Chrome 扩展连接", action: nil, keyEquivalent: "")
         detail.isEnabled = false
-        menu.addItem(detail)
+        if browserConfigured { menu.addItem(detail) }
         menu.addItem(.separator())
         usageHeading = NSMenuItem(title: "Codex 剩余额度", action: nil, keyEquivalent: "")
         usageHeading.isEnabled = false
@@ -43,6 +50,15 @@ final class StatusApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         usageRefresh.target = self
         menu.addItem(usageRefresh)
         menu.addItem(.separator())
+        hookStatus = NSMenuItem(title: "Hooks：正在检查配置…", action: nil, keyEquivalent: "")
+        hookStatus.isEnabled = false
+        menu.addItem(hookStatus)
+        configureHooksItem = NSMenuItem(title: "配置 / 更新 Codex hooks…", action: #selector(configureHooks), keyEquivalent: "")
+        configureHooksItem.target = self
+        menu.addItem(configureHooksItem)
+        removeHooksItem = NSMenuItem(title: "移除本应用 hooks…", action: #selector(removeHooks), keyEquivalent: "")
+        removeHooksItem.target = self
+        menu.addItem(removeHooksItem)
         let codex = NSMenuItem(title: "打开 Codex", action: #selector(openCodex), keyEquivalent: "")
         codex.target = self
         menu.addItem(codex)
@@ -51,19 +67,23 @@ final class StatusApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(connect)
         let open = NSMenuItem(title: "打开 ChatGPT", action: #selector(openChatGPT), keyEquivalent: "")
         open.target = self
-        menu.addItem(open)
+        if browserConfigured { menu.addItem(open) }
         let quit = NSMenuItem(title: "退出状态灯", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
         item.menu = menu
         refresh()
         updateUsageMenu()
+        updateHookStatus()
         refreshUsage()
         let statusTimer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in self?.refresh() }
         RunLoop.main.add(statusTimer, forMode: .common)
         let usageTimer = Timer(timeInterval: 60, repeats: true) { [weak self] _ in self?.refreshUsage() }
         RunLoop.main.add(usageTimer, forMode: .common)
-        DispatchQueue.global(qos: .utility).async { [weak self] in self?.serve() }
+        // A copied Codex-only app has no browser token or extension to configure.
+        if browserConfigured {
+            DispatchQueue.global(qos: .utility).async { [weak self] in self?.serve() }
+        }
     }
 
     private func refresh() {
@@ -82,10 +102,14 @@ final class StatusApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         codexDetail.title = codex.detail
         desktopDetail.title = desktopStatus.detail
         detail.title = alive ? source : "离线：未收到浏览器心跳"
-        item.button?.toolTip = "\(codex.detail)\n\(desktopDetail.title)\n\(detail.title)\nCodex 剩余：\(usage.summary(now: now))\n\(usage.notice(now: now))"
+        let browserDetail = browserConfigured ? "\(detail.title)\n" : ""
+        item.button?.toolTip = "\(codex.detail)\n\(desktopDetail.title)\n\(browserDetail)Codex 剩余：\(usage.summary(now: now))\n\(usage.notice(now: now))"
     }
 
-    func menuWillOpen(_ menu: NSMenu) { updateUsageMenu() }
+    func menuWillOpen(_ menu: NSMenu) {
+        updateUsageMenu()
+        updateHookStatus()
+    }
 
     func applicationWillTerminate(_ notification: Notification) { desktopStatus.stop() }
 
@@ -149,10 +173,70 @@ final class StatusApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         launchCodex(route: "launch")
     }
 
+    private func updateHookStatus() {
+        guard !configuringHooks else { return }
+        hookStatusRevision += 1
+        let revision = hookStatusRevision
+        let installer = hookInstaller
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let description = installer.statusDescription()
+            DispatchQueue.main.async {
+                guard let self = self, !self.configuringHooks, self.hookStatusRevision == revision else { return }
+                self.hookStatus.title = description
+            }
+        }
+    }
+
+    @objc private func configureHooks() { changeHooks(installing: true) }
+    @objc private func removeHooks() { changeHooks(installing: false) }
+
+    private func changeHooks(installing: Bool) {
+        guard !configuringHooks else { return }
+        configuringHooks = true
+        hookStatusRevision += 1
+        configureHooksItem.isEnabled = false
+        removeHooksItem.isEnabled = false
+        hookStatus.title = installing ? "Hooks：正在配置…" : "Hooks：正在移除…"
+        let installer = hookInstaller
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let result = Result { try installing ? installer.install() : installer.remove() }
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.configuringHooks = false
+                self.configureHooksItem.isEnabled = true
+                self.removeHooksItem.isEnabled = true
+                self.updateHookStatus()
+                self.refresh()
+                switch result {
+                case .success(let change):
+                    let alert = NSAlert()
+                    alert.messageText = installing ? "Codex hooks 已配置" : "已移除本应用 hooks"
+                    var message = installing
+                        ? "已准备好 \(CodexHookInstaller.events.count) 项 hooks。\n\n接下来请打开 Codex 设置 → Hooks，找到命令指向以下程序的 hooks，点击 Reload hooks 后审核并信任：\n\(installer.binaryURL.path)\n\n然后重新打开或新建本地会话，发送一条消息。CLI 中也可输入 /hooks 审核。"
+                        : "其他 hooks 已保留。请在 Codex 的 Hooks 页面点击 Reload hooks。"
+                    if let backup = change.backupURL { message += "\n\n原配置已备份：\n\(backup.path)" }
+                    alert.informativeText = message
+                    alert.addButton(withTitle: "打开 Codex 设置")
+                    alert.addButton(withTitle: "完成")
+                    NSApp.activate(ignoringOtherApps: true)
+                    if alert.runModal() == .alertFirstButtonReturn { self.launchCodex(route: "settings") }
+                case .failure(let error):
+                    let alert = NSAlert()
+                    alert.alertStyle = .warning
+                    alert.messageText = installing ? "无法配置 Codex hooks" : "无法移除 Codex hooks"
+                    alert.informativeText = "\(error.localizedDescription)\n\n配置文件：\(installer.configurationURL.path)"
+                    alert.addButton(withTitle: "确定")
+                    NSApp.activate(ignoringOtherApps: true)
+                    alert.runModal()
+                }
+            }
+        }
+    }
+
     @objc private func connectCodex() {
         let alert = NSAlert()
         alert.messageText = "连接 Codex 桌面版"
-        alert.informativeText = "1. 打开 Codex 设置，进入 Hooks（生命周期钩子）。\n2. 在用户配置中找到命令指向 ~/.gpt-traffic-light/codex-hook 的 8 项 hooks，审核并信任；如未显示，点击 Reload hooks。\n3. 重新打开或新建本地会话，发送一条消息。\n\nCLI 也可输入 /hooks 审核。只需信任本状态灯的命令。\n\n“打开 Codex”仅唤起应用，不会自动授权。"
+        alert.informativeText = "1. 先点击状态灯菜单的“配置 / 更新 Codex hooks…”。\n2. 打开 Codex 设置，进入 Hooks（生命周期钩子），点击 Reload hooks。\n3. 找到命令指向 \(hookInstaller.binaryURL.path) 的 \(CodexHookInstaller.events.count) 项 hooks，审核并信任。\n4. 重新打开或新建本地会话，发送一条消息。\n\nCLI 也可输入 /hooks 审核。只需信任本状态灯的命令。\n\n菜单的“已配置”不代表 Codex 已信任；信任需在 Codex 中完成。"
         alert.addButton(withTitle: "打开 Codex 设置")
         alert.addButton(withTitle: "取消")
         NSApp.activate(ignoringOtherApps: true)
@@ -283,6 +367,16 @@ struct TrafficLightMain {
     static func main() {
         if CommandLine.arguments.contains("--codex-hook") {
             CodexMonitor.runHook()
+            return
+        }
+        if CommandLine.arguments.contains("--remove-codex-hooks") {
+            do {
+                _ = try CodexHookInstaller().remove()
+                print("已移除本应用 hooks，其他 hooks 已保留。")
+            } catch {
+                FileHandle.standardError.write(Data("\(error.localizedDescription)\n".utf8))
+                exit(1)
+            }
             return
         }
         let app = NSApplication.shared

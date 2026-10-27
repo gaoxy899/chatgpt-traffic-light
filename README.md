@@ -1,31 +1,43 @@
-# ChatGPT / Codex Mac Traffic Light
+# Codex Mac Traffic Light
 
-macOS 菜单栏显示 Codex 桌面版本地会话和 ChatGPT 网页状态：🟡 思考 / 执行中、🔴 等待授权确认、🟢 空闲 / 本轮结束、⚪ 未连接。
+macOS 菜单栏显示 Codex 桌面版本地会话状态：🟡 思考 / 执行中、🔴 等待授权确认、🟢 空闲 / 本轮结束、⚪ 未连接。
 
 同时显示 Codex **剩余额度**，例如 `🟡 GPT 5h 72% · 周 46%`。窗口名称按服务端返回的实际时长生成；这里的百分比属于 Codex 配额，不代表 ChatGPT 网页聊天额度。
 
 ## 安装
 
-系统要求：macOS 12+、Apple Command Line Tools、Python 3。Codex 需要支持生命周期 hooks 的版本；只监测 Codex 时不需要 Chrome 扩展。
+系统要求：macOS 12+、支持生命周期 hooks 的 Codex 桌面版。使用编译好的 App 不需要 Xcode、Python 或终端命令。
 
-实时状态监测已由 Swift 原生实现，运行 App 不需要 Python；当前源码安装、卸载脚本仍使用 Python 3 配置 hooks 等安装数据。
+1. 下载符合处理器的 ZIP，解压后把 `GPTTrafficLight.app` 拖入“应用程序”。
+2. 打开 App，点击菜单栏状态灯 → **配置 / 更新 Codex hooks…**。
+3. 配置成功后点击“打开 Codex 设置”，进入 Hooks，点击 `Reload hooks`，审核并信任本应用的 8 项 hooks。
+4. 重新打开或新建本地会话，发送一条消息，即可观察状态。
+
+菜单显示“已配置”只表示配置和程序已就绪，信任状态请在 Codex 查看。升级 App 后再次选择“配置 / 更新 Codex hooks…”；程序有更新时菜单会提示，重复配置不会重复添加 hooks。没有变化的配置不会重写。
+
+### 从源码编译与发布
+
+开发机器需要 Apple Command Line Tools。编译和打包也不需要 Python：
 
 ```bash
-xcode-select --install   # 如果已经安装可跳过
+xcode-select --install   # 开发机器如已安装可跳过
 cd /Users/gaoxy/dev/chatgpt-traffic-light
-bash install.sh
-open ~/Applications/GPTTrafficLight.app
+bash build.sh            # 同时生成 Apple Silicon 和 Intel 的 App 与 ZIP
+# 也可单独执行 bash build.sh arm64 或 bash build.sh x86_64
+# 可选本机安装：bash install.sh
 ```
 
-升级时先从菜单退出旧的状态灯，再重新安装和启动。
+产物为 `dist/arm64/GPTTrafficLight.app`、`dist/x86_64/GPTTrafficLight.app`，以及 `dist/GPTTrafficLight-AppleSilicon.zip`、`dist/GPTTrafficLight-Intel.zip`。ZIP 中只有完整 App，解压即可拖入“应用程序”。打包不写入开发者机器的 hooks 或登录数据；浏览器扩展不包含在这次发布中。
+
+当前构建使用本地 ad-hoc 签名，尚未做用于公开分发的 Developer ID 签名和 Apple 公证。升级时先从菜单退出旧的状态灯，再替换 App 并启动。`install.sh` 仅供开发者编译并复制 App，不会自动配置 hooks。
 
 ### Codex 桌面版
 
-安装器会向 `${CODEX_HOME:-~/.codex}/hooks.json` 合并本应用的 hooks，保留原有 hooks，并在修改前生成 `.traffic-light-backup-时间戳` 备份。不会修改已有 hooks 的信任设置。
+菜单中的配置器以 Swift 将应用内的可执行程序复制到 `~/.gpt-traffic-light/codex-hook`，向 `${CODEX_HOME:-~/.codex}/hooks.json` 合并本应用的 hooks，保留原有 hooks 和其他配置，并在修改前生成 `.traffic-light-backup-唯一标识` 备份。使用临时文件和原子替换，配置格式无效时不覆盖原文件；不会修改 Codex 的信任设置。
 
-1. 点击状态灯菜单的“Codex 连接 / 授权说明…”→“打开 Codex 设置”，进入 Hooks（生命周期钩子）。在用户配置中找到命令指向 `~/.gpt-traffic-light/codex-hook` 的 8 项 hooks，审核后逐项信任；如未显示，点击 `Reload hooks`。CLI 中也可执行 `/hooks` 审核。只需信任本状态灯的命令。新版 Codex 要求信任新的或发生变化的 hook 定义，未信任的 hooks 不会执行。
+1. 先点击“配置 / 更新 Codex hooks…”，然后打开 Codex 设置，进入 Hooks（生命周期钩子）。在用户配置中找到命令指向 `~/.gpt-traffic-light/codex-hook` 的 8 项 hooks，审核后逐项信任；如未显示，点击 `Reload hooks`。CLI 中也可执行 `/hooks` 审核。只需信任本状态灯的命令。新版 Codex 要求信任新的或发生变化的 hook 定义，未信任的 hooks 不会执行。
 2. 重新打开或新建一个**本地会话**，发送消息后观察状态灯。已经执行中的旧任务不会自动补发此前的事件。
-3. 菜单分别显示 Codex 和浏览器状态；“打开 Codex”可以回到桌面应用。
+3. 菜单显示 Codex 会话和实时连接状态；“打开 Codex”可以回到桌面应用。
 
 “打开 Codex”只唤起应用，不会自动信任 hooks。程序会优先查找已运行或已注册的 Codex，也兼容 `/Applications/Codex.app`、`/Applications/ChatGPT.app` 和 `~/Applications` 下具有 Codex Bundle ID 的应用；启动失败会显示错误。Codex 设置深链只打开设置首页，需自行进入 Hooks。
 
@@ -65,33 +77,22 @@ open ~/Applications/GPTTrafficLight.app
 
 本应用只在内存中保存配额摘要，不直接读取或保存登录令牌，也不记录账号信息或原始接口响应。登录凭据由 Codex CLI 自身管理。
 
-### ChatGPT 网页版（可选）
-
-进入 Chrome `chrome://extensions`，启用开发者模式，选择“加载已解压的扩展程序”，加载：
-
-`~/.gpt-traffic-light/extension`
-
-在 Chrome 文件选择器中可使用 `Command + Shift + G` 粘贴路径。打开或刷新 `https://chatgpt.com`。
-
-- 🟡 页面检测到停止生成按钮。
-- 🔴 页面检测到可见授权 / 确认对话框（启发式）。
-- 🟢 扩展连接正常，没有检测到生成或确认请求。
-- ⚪ 12 秒未收到扩展心跳。
-
-网页选择器可能随 ChatGPT 更新失效，必要时更新 `extension/content.js` 并重新加载扩展及网页。网页状态通过 `127.0.0.1:18765` 和安装时生成的随机令牌传输，不传输会话正文或 Cookie。
-
 ## 登录时启动
 
-在 macOS“系统设置 → 通用 → 登录项”中添加 `~/Applications/GPTTrafficLight.app`。
+在 macOS“系统设置 → 通用 → 登录项”中添加实际安装的 `GPTTrafficLight.app`。
 
 ## 卸载
 
-退出状态灯后执行 `bash uninstall.sh`。脚本仅从 Codex 配置中移除本应用添加的 hooks，保留其他 hooks；然后删除应用和本应用数据。Chrome 扩展和登录项需自行移除。
+先从状态灯菜单选择“移除本应用 hooks…”，到 Codex 中点击 `Reload hooks`，再退出状态灯并将 App 移到废纸篓。只移除本应用标记的 handlers，保留其他 hooks，修改前备份配置。登录项需自行移除。
+
+开发者仍可执行 `bash uninstall.sh`，通过原生程序移除 hooks 并删除 App 与本应用数据；不依赖 Python。
 
 ## 验证
 
 ```bash
-xcrun swiftc -O -parse-as-library mac/TrafficLight.swift mac/CodexMonitor.swift mac/CodexUsage.swift mac/CodexDesktopStatus.swift -framework AppKit -o /tmp/GPTTrafficLight
+xcrun swiftc -O -parse-as-library mac/*.swift -framework AppKit -o /tmp/GPTTrafficLight
+xcrun swiftc -O -parse-as-library mac/CodexHookInstaller.swift tests/CodexHookInstallerTests.swift -o /tmp/CodexHookInstallerTests
+HOOK_TEST_APP=/tmp/GPTTrafficLight /tmp/CodexHookInstallerTests
 xcrun swiftc -O -parse-as-library mac/CodexMonitor.swift tests/CodexMonitorTests.swift -o /tmp/CodexMonitorTests
 /tmp/CodexMonitorTests
 xcrun swiftc -O -parse-as-library mac/CodexDesktopStatus.swift tests/CodexDesktopStatusTests.swift -o /tmp/CodexDesktopStatusTests
@@ -103,7 +104,7 @@ xcrun swiftc -O -parse-as-library mac/CodexUsage.swift tests/CodexUsageTests.swi
 # 可选：真实只读查询，仅输出配额类别、剩余百分比和重置时间
 /tmp/CodexUsageTests --live
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py'
-bash -n install.sh uninstall.sh
+bash -n build.sh install.sh uninstall.sh
 ```
 
 自动化验证覆盖生命周期、并行会话、多个授权、旧轮次回调、中断、失效进程及配置合并；实时状态测试覆盖 thinking、等待授权、批准后工具尚未返回、乱序 / 丢失状态更新、版本不兼容、只读订阅及正文不输出。用量测试覆盖剩余比例、空值、多个配额类别、旧数据与重置标记、协议握手、超时及子进程清理。实际授权弹窗及菜单栏显示仍需安装、信任 hooks 后验证；额度的真实读取可通过上述 `--live` 单独验证。
