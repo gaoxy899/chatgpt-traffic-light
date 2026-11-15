@@ -37,6 +37,9 @@ struct DesktopRuntimeStatus {
 
 // Retain only runtime status; conversation text, tool input and titles are discarded.
 struct DesktopStatusStream {
+    // Both versions use the same revisioned snapshots and runtime-status patches.
+    private static let supportedVersions: Set<Int> = [11, 13]
+
     let owner: String
     let subscribedAt: TimeInterval
     private(set) var revision: Int?
@@ -53,7 +56,7 @@ struct DesktopStatusStream {
             guard let targets = targets as? [String] else { return invalidate() }
             if !targets.contains(clientID) { return true }
         }
-        guard desktopInteger(message["version"]) == 11,
+        guard let version = desktopInteger(message["version"]), Self.supportedVersions.contains(version),
               let params = message["params"] as? [String: Any],
               let change = params["change"] as? [String: Any],
               let nextRevision = desktopInteger(change["revision"]) else { return invalidate() }

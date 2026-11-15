@@ -17,8 +17,8 @@ status = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(status)
 
 
-def snapshot(kind="active", flags=None, revision=1, source="owner"):
-    return {"type": "broadcast", "method": "thread-stream-state-changed", "version": 11,
+def snapshot(kind="active", flags=None, revision=1, source="owner", version=11):
+    return {"type": "broadcast", "method": "thread-stream-state-changed", "version": version,
             "sourceClientId": source, "targetClientIds": ["observer"], "params": {
                 "hostId": "local", "conversationId": "thread", "change": {
                     "type": "snapshot", "revision": revision, "conversationState": {
@@ -109,7 +109,7 @@ class DesktopStatusTests(unittest.TestCase):
         stream = status.StatusStream("owner")
         stream.accept(snapshot(flags=["waitingOnApproval"]), "observer")
         wrong = snapshot(revision=2)
-        wrong["version"] = 12
+        wrong["version"] = 14
         self.assertFalse(stream.accept(wrong, "observer"))
         self.assertIsNone(stream.status)
 
@@ -156,7 +156,7 @@ class DesktopStatusTests(unittest.TestCase):
                             self.assertEqual(message["method"], expected)
                             if expected == "thread-stream-following-changed":
                                 self.assertTrue(message["params"]["following"])
-                                peer.send(snapshot(flags=["waitingOnApproval"]))
+                                peer.send(snapshot(flags=["waitingOnApproval"], version=13))
                             else:
                                 peer.send({"type": "response", "requestId": message["requestId"],
                                            "method": expected, "resultType": "success", "handledByClientId": "owner",

@@ -7,8 +7,8 @@ private func hash(_ thread: String) -> String {
 }
 
 private func snapshot(_ kind: String = "active", flags: [String] = [], revision: Int = 1,
-                      owner: String = "owner") -> [String: Any] {
-    ["type": "broadcast", "method": "thread-stream-state-changed", "version": 11,
+                      owner: String = "owner", version: Int = 11) -> [String: Any] {
+    ["type": "broadcast", "method": "thread-stream-state-changed", "version": version,
      "sourceClientId": owner, "targetClientIds": ["observer"], "params": [
         "hostId": "local", "conversationId": "thread", "change": [
             "type": "snapshot", "revision": revision, "conversationState": [
@@ -17,8 +17,8 @@ private func snapshot(_ kind: String = "active", flags: [String] = [], revision:
                 "turns": [["text": "PRIVATE_TEXT"]]]]]]
 }
 
-private func patches(_ base: Int, _ revision: Int, _ values: [[String: Any]]) -> [String: Any] {
-    var message = snapshot(revision: revision)
+private func patches(_ base: Int, _ revision: Int, _ values: [[String: Any]], version: Int = 11) -> [String: Any] {
+    var message = snapshot(revision: revision, version: version)
     var params = message["params"] as! [String: Any]
     params["change"] = ["type": "patches", "baseRevision": base, "revision": revision, "patches": values]
     message["params"] = params
@@ -148,7 +148,7 @@ private final class FixtureServer {
                             "resultType": "success", "handledByClientId": "owner", "result": ["clientId": "observer"]])
                     case "thread-stream-following-changed":
                         if (message["params"] as? [String: Any])?["following"] as? Bool == true {
-                            try connection.send(snapshot(flags: ["waitingOnApproval"]))
+                            try connection.send(snapshot(flags: ["waitingOnApproval"], version: 13))
                         }
                     case "client-discovery-response":
                         precondition((message["response"] as? [String: Any])?["canHandle"] as? Bool == false)
@@ -212,7 +212,7 @@ struct CodexDesktopStatusTests {
         precondition(stream.accept(snapshot("idle", revision: 8), clientID: "observer"))
         precondition(stream.status?.trafficState == "idle")
         var wrongVersion = snapshot(revision: 9)
-        wrongVersion["version"] = 12
+        wrongVersion["version"] = 14
         precondition(!stream.accept(wrongVersion, clientID: "observer"))
         precondition(stream.status == nil)
         for value: Any in [NSNull(), [:], ["type": "active"], ["type": "active", "activeFlags": "waitingOnApproval"]] {
@@ -323,9 +323,9 @@ struct CodexDesktopStatusTests {
         wait(until: { monitor.states[hash("thread")] == "attention" })
         precondition(monitor.detail.contains("实时连接"))
         precondition(server.receivedMethods.filter { $0 == "initialize" }.count == 1)
-        server.enqueue(patches(1, 2, [["op": "remove", "path": ["threadRuntimeStatus", "activeFlags", 0]]]))
+        server.enqueue(patches(1, 2, [["op": "remove", "path": ["threadRuntimeStatus", "activeFlags", 0]]], version: 13))
         wait(until: { monitor.states[hash("thread")] == "running" })
-        server.enqueue(snapshot("idle", revision: 3))
+        server.enqueue(snapshot("idle", revision: 3, version: 13))
         wait(until: { monitor.states[hash("thread")] == "idle" })
         // A peer disconnect invalidates the old summary and reconnects on the native worker.
         server.dropConnection()

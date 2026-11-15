@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only observer of the local Codex desktop IPC stream (version 11).
+"""Read-only observer of the local Codex desktop IPC stream (versions 11 and 13).
 
 Only status summaries leave this process. Conversation contents are discarded,
 never logged or written. No turn, ownership or approval decision is changed.
@@ -16,7 +16,7 @@ import sys
 import time
 import uuid
 
-STREAM_VERSION = 11
+SUPPORTED_STREAM_VERSIONS = (11, 13)
 MAX_FRAME = 16 * 1024 * 1024
 
 
@@ -50,7 +50,7 @@ class StatusStream:
         targets = message.get("targetClientIds")
         if targets is not None and client_id not in targets:
             return True
-        if message.get("version") != STREAM_VERSION:
+        if message.get("version") not in SUPPORTED_STREAM_VERSIONS:
             self.status = None
             return False
         change = message.get("params", {}).get("change", {})
