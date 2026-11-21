@@ -11,7 +11,10 @@ final class StatusApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var detail: NSMenuItem!
     private var codexDetail: NSMenuItem!
     private var desktopDetail: NSMenuItem!
-    private let desktopStatus = CodexDesktopStatus()
+    private var approvalDetail: NSMenuItem!
+    private var desktopStatus = CodexDesktopStatus()
+    private var legacyStatusEnabled = true
+    private let approvalAccessibility = CodexApprovalAccessibility()
     private let hookInstaller = CodexHookInstaller()
     private var hookStatus: NSMenuItem!
     private var configureHooksItem: NSMenuItem!
@@ -39,6 +42,13 @@ final class StatusApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         desktopDetail = NSMenuItem(title: "等待 Codex 实时状态", action: nil, keyEquivalent: "")
         desktopDetail.isEnabled = false
         menu.addItem(desktopDetail)
+        approvalDetail = NSMenuItem(title: "等待授权弹窗检测", action: nil, keyEquivalent: "")
+        approvalDetail.isEnabled = false
+        menu.addItem(approvalDetail)
+        let accessibilitySettings = NSMenuItem(title: "授权弹窗检测设置…",
+                                             action: #selector(openApprovalSettings), keyEquivalent: "")
+        accessibilitySettings.target = self
+        menu.addItem(accessibilitySettings)
         detail = NSMenuItem(title: "等待 Chrome 扩展连接", action: nil, keyEquivalent: "")
         detail.isEnabled = false
         if browserConfigured { menu.addItem(detail) }
@@ -72,6 +82,7 @@ final class StatusApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         quit.target = self
         menu.addItem(quit)
         item.menu = menu
+        approvalAccessibility.onUpdate = { [weak self] in self?.updateStatus() }
         refresh()
         updateUsageMenu()
         updateHookStatus()
@@ -84,12 +95,37 @@ final class StatusApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if browserConfigured {
             DispatchQueue.global(qos: .utility).async { [weak self] in self?.serve() }
         }
+        if CommandLine.arguments.contains("--request-approval-accessibility") {
+            CodexApprovalAccessibility.openSettings()
+        }
     }
 
     private func refresh() {
+        let apps = NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex")
+        // 26.1117 moved desktop state into its utility process and retired the old stream.
+        let supportsLegacy = !apps.contains {
+            guard let url = $0.bundleURL,
+                  let version = Bundle(url: url)?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String else {
+                return false
+            }
+            return version.compare("26.1117", options: .numeric) != .orderedAscending
+        }
+        if supportsLegacy != legacyStatusEnabled {
+            desktopStatus.stop()
+            desktopStatus = CodexDesktopStatus()
+            legacyStatusEnabled = supportsLegacy
+        }
+        if legacyStatusEnabled { desktopStatus.startIfNeeded() }
+        approvalAccessibility.refresh(applications: apps)
+        updateStatus()
+    }
+
+    private func updateStatus() {
         let alive = Date().timeIntervalSince(lastUpdate) < 12
-        desktopStatus.startIfNeeded()
-        let codex = CodexMonitor.snapshot(desktopStates: desktopStatus.states)
+        let desktopStates = legacyStatusEnabled ? desktopStatus.states : [:]
+        let hookSnapshot = CodexMonitor.snapshot(desktopStates: desktopStates)
+        let codex = approvalAccessibility.isWaiting
+            ? CodexSnapshot(state: "attention", detail: "Codex：授权弹窗等待确认") : hookSnapshot
         let states = [codex.state, alive ? state : "offline"]
         let label: String
         if states.contains("attention") { label = "🔴" }
@@ -100,10 +136,11 @@ final class StatusApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item.button?.title = "\(label) GPT \(usage.summary(now: now))"
         item.button?.font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
         codexDetail.title = codex.detail
-        desktopDetail.title = desktopStatus.detail
+        desktopDetail.title = legacyStatusEnabled ? desktopStatus.detail : "Codex：使用授权弹窗检测"
+        approvalDetail.title = approvalAccessibility.detail
         detail.title = alive ? source : "离线：未收到浏览器心跳"
         let browserDetail = browserConfigured ? "\(detail.title)\n" : ""
-        item.button?.toolTip = "\(codex.detail)\n\(desktopDetail.title)\n\(browserDetail)Codex 剩余：\(usage.summary(now: now))\n\(usage.notice(now: now))"
+        item.button?.toolTip = "\(codex.detail)\n\(desktopDetail.title)\n\(approvalDetail.title)\n\(browserDetail)Codex 剩余：\(usage.summary(now: now))\n\(usage.notice(now: now))"
     }
 
     func menuWillOpen(_ menu: NSMenu) {
@@ -112,6 +149,8 @@ final class StatusApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) { desktopStatus.stop() }
+
+    @objc private func openApprovalSettings() { CodexApprovalAccessibility.openSettings() }
 
     @objc private func refreshUsage() {
         guard !usage.isLoading else { return }

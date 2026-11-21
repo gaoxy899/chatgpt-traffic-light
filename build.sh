@@ -27,8 +27,8 @@ for ARCH in "${ARCHITECTURES[@]}"; do
 <key>CFBundleExecutable</key><string>GPTTrafficLight</string>
 <key>CFBundleName</key><string>GPTTrafficLight</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>1.2.0</string>
-<key>CFBundleVersion</key><string>12</string>
+<key>CFBundleShortVersionString</key><string>1.3.0</string>
+<key>CFBundleVersion</key><string>13</string>
 <key>LSMinimumSystemVersion</key><string>12.0</string>
 <key>LSUIElement</key><true/>
 <key>NSHighResolutionCapable</key><true/>

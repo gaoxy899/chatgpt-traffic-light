@@ -12,6 +12,7 @@ macOS 菜单栏显示 Codex 桌面版本地会话状态：🟡 思考 / 执行�
 2. 打开 App，点击菜单栏状态灯 → **配置 / 更新 Codex hooks…**。
 3. 配置成功后点击“打开 Codex 设置”，进入 Hooks，点击 `Reload hooks`，审核并信任本应用的 8 项 hooks。
 4. 重新打开或新建本地会话，发送一条消息，即可观察状态。
+5. Codex 26.1117 及更新版本使用辅助功能检测授权弹窗。点击状态灯菜单的“授权弹窗检测设置…”，在“系统设置 → 隐私与安全性 → 辅助功能”中启用 GPTTrafficLight。
 
 菜单显示“已配置”只表示配置和程序已就绪，信任状态请在 Codex 查看。升级 App 后再次选择“配置 / 更新 Codex hooks…”；程序有更新时菜单会提示，重复配置不会重复添加 hooks。没有变化的配置不会重写。
 
@@ -41,11 +42,15 @@ bash build.sh            # 同时生成 Apple Silicon 和 Intel 的 App 与 ZIP
 
 “打开 Codex”只唤起应用，不会自动信任 hooks。程序会优先查找已运行或已注册的 Codex，也兼容 `/Applications/Codex.app`、`/Applications/ChatGPT.app` 和 `~/Applications` 下具有 Codex Bundle ID 的应用；启动失败会显示错误。Codex 设置深链只打开设置首页，需自行进入 Hooks。
 
-桌面版授权状态通过本机 `${CODEX_HOME:-~/.codex}/ipc/ipc.sock` 的只读状态订阅核对。只有实时状态明确包含 `waitingOnApproval` 才亮红灯；用户批准后，只要该标记清除，就恢复黄灯，不等待命令执行结束。thinking、生成回答及已获准的工具执行均为黄灯。
+Codex 26.1117 及更新版本通过 macOS 辅助功能检测窗口中的授权按钮。授予 GPTTrafficLight 辅助功能权限后，菜单显示“授权弹窗检测：已连接”。同一窗口内同时存在可用的“允许一次”和“拒绝”等决策按钮时亮红灯。支持简体中文、繁体中文和英文。弹窗关闭后，灯色按 hooks 的执行状态更新。程序每 2 秒在后台检查窗口，只在内存中保留检测结果。
 
-此本机 IPC 适配支持桌面版内部状态流版本 11 和 13。程序只订阅状态。连接中断、协议不兼容或数据超过 6 秒未更新时立即停止采用旧状态；下拉菜单会显示“实时通道未连接”。此时 hooks 继续提供执行状态，但未确认的授权线索只显示黄灯及“授权状态未确认”，避免误报红灯。CLI / IDE 若没有桌面会话所有者，同样只提供 hooks 执行状态。
+检测范围是 Codex 已展开的窗口和授权卡片。最小化窗口、未打开的聊天或收起的授权卡片可能无法检测。界面读取超时或权限被撤回后，旧的检测结果失效。菜单中的“正在读取 Codex 窗口”表示当前结果尚未确认。
 
-旧会话没有响应时只延后该会话的查询，不断开其他正常订阅。程序优先接入执行中的会话，每轮最多发现一个会话，避免旧会话超时阻塞状态心跳；超时后等待 30 秒再重试。
+较旧版本通过本机 `${CODEX_HOME:-~/.codex}/ipc/ipc.sock` 的状态订阅核对，实时状态包含 `waitingOnApproval` 时亮红灯。thinking、生成回答及已获准的工具执行均为黄灯。
+
+此本机 IPC 适配支持桌面版内部状态流版本 11 和 13。程序只订阅状态。连接中断或后台线程超过 6 秒未更新摘要时，下拉菜单显示“实时通道未连接”。握手成功后，如果还没有收到可用的会话状态，菜单显示“通道已连接，等待桌面会话状态”。等待期间 hooks 继续提供执行状态，未确认的授权线索显示黄灯及“授权状态未确认”。CLI / IDE 若没有桌面会话所有者，同样只提供 hooks 执行状态。
+
+旧会话没有响应时只延后该会话的查询，不断开其他正常订阅。程序优先接入执行中的会话，每轮最多发现一个会话，避免旧会话超时阻塞状态心跳。超时后等待 30 秒再重试，通道重新连接时立即重新查找会话。
 
 事件映射：
 
@@ -57,7 +62,7 @@ bash build.sh            # 同时生成 Apple Silicon 和 Intel 的 App 与 ZIP
 | `Stop` / `Interrupt` | 🟢 本轮结束 / 已中断 |
 | `SessionEnd` / Codex 进程退出 | 移除会话；没有其他来源时 ⚪ |
 
-多个会话汇总优先级：🔴 > 🟡 > 🟢 > ⚪。一个会话结束不会掩盖另一个仍在执行的会话。没有收到任何 Codex hook 时显示离线，不把“未接入”当作空闲。
+多个会话汇总优先级为 🔴 > 🟡 > 🟢 > ⚪。一个会话结束不会掩盖另一个仍在执行的会话。检测到可用的授权弹窗时显示红灯，其余执行状态由 hooks 汇总。
 
 状态记录位于 `~/.gpt-traffic-light/codex-sessions`，仅包含进程标识、会话标识、状态、轮次标识和授权请求摘要哈希，不保存提示词、命令、工具输出或回答。授权请求与工具返回按实际命令匹配，忽略仅在授权阶段附带的说明。记录按会话隔离，并检查进程启动时间，避免崩溃或 PID 复用造成残留状态。
 
@@ -97,6 +102,8 @@ xcrun swiftc -O -parse-as-library mac/CodexMonitor.swift tests/CodexMonitorTests
 /tmp/CodexMonitorTests
 xcrun swiftc -O -parse-as-library mac/CodexDesktopStatus.swift tests/CodexDesktopStatusTests.swift -o /tmp/CodexDesktopStatusTests
 /tmp/CodexDesktopStatusTests
+xcrun swiftc -O -parse-as-library mac/CodexApprovalAccessibility.swift tests/CodexApprovalAccessibilityTests.swift -framework AppKit -o /tmp/CodexApprovalAccessibilityTests
+/tmp/CodexApprovalAccessibilityTests
 # 可选：连接本机已有 Codex 会话，仅输出状态类别和会话数量
 /tmp/CodexDesktopStatusTests --live
 xcrun swiftc -O -parse-as-library mac/CodexUsage.swift tests/CodexUsageTests.swift -o /tmp/CodexUsageTests
@@ -111,9 +118,9 @@ bash -n build.sh install.sh uninstall.sh
 
 ## 限制
 
-- Codex 接入依据[官方生命周期 hooks](https://learn.chatgpt.com/docs/hooks)，不读取桌面窗口，也不依赖网页按钮；无需辅助功能或屏幕录制权限。
+- 执行状态依据[官方生命周期 hooks](https://learn.chatgpt.com/docs/hooks)。新版桌面端的授权弹窗检测需要辅助功能权限，并读取 Codex 窗口中的按钮文案。
 - 监测的是本机执行的 Codex 会话。使用相同用户 hooks 的 CLI / IDE 本地会话也会计入；远程主机或云端运行的任务不在本机覆盖范围内。
 - `Stop` 表示本轮停止，不保证任务成功。其他 hook 让 Codex 继续执行时，后续事件会再次更新状态。
-- Hooks 没有独立的“授权弹窗已关闭”事件，因此红灯依据桌面实时状态确认，不能仅凭 `PermissionRequest` 推断。状态灯约每 2 秒刷新显示。
+- Hooks 没有独立的“授权弹窗已关闭”事件，红灯由可用的桌面状态流或窗口中的授权按钮确认。状态灯约每 2 秒刷新显示。
 - 普通提问和等待用户补充内容不等于授权确认，不自动亮红灯；远程审批不在本机实时核对范围内。
 - 只支持带有上述 hooks 的 Codex 版本；如果 hooks 被禁用、未信任或被组织策略限制，菜单会保持未连接。

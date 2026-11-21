@@ -275,16 +275,17 @@ final class DesktopStatusObserver {
     private let directory: URL
     private let transport: DesktopIPCTransport
     private let now: () -> TimeInterval
-    private let onUpdate: ([String: String]) -> Void
+    private let onUpdate: (Bool, [String: String]) -> Void
     private var clientID = "initializing-client"
     private(set) var streams = [String: DesktopStatusStream]()
     private var wanted = [String: String]()
     private var retryAfter = [String: TimeInterval]()
     private var lastStates = [String: String]()
+    private var lastConnection = false
     private var emittedAt: TimeInterval = -.infinity
 
     init(socketURL: URL, directory: URL, transport: DesktopIPCTransport = DesktopSocketTransport(),
-         now: @escaping () -> TimeInterval = desktopNow, onUpdate: @escaping ([String: String]) -> Void) {
+         now: @escaping () -> TimeInterval = desktopNow, onUpdate: @escaping (Bool, [String: String]) -> Void) {
         self.socketURL = socketURL
         self.directory = directory
         self.transport = transport
@@ -308,6 +309,8 @@ final class DesktopStatusObserver {
                         throw DesktopIPCError.invalidFrame
                     }
                     clientID = id
+                    retryAfter.removeAll()
+                    publish()
                     refreshAt = 0
                 }
                 if now() >= refreshAt {
@@ -318,6 +321,7 @@ final class DesktopStatusObserver {
                 publish()
             } catch {
                 transport.close()
+                clientID = "initializing-client"
                 streams.removeAll()
                 publish()
                 let retryAt = now() + 1
@@ -420,8 +424,10 @@ final class DesktopStatusObserver {
         for (thread, stream) in streams {
             if let hash = wanted[thread], let state = stream.status?.trafficState { states[hash] = state }
         }
-        if states != lastStates || now() - emittedAt >= 1 {
-            onUpdate(states)
+        let connected = clientID != "initializing-client"
+        if connected != lastConnection || states != lastStates || now() - emittedAt >= 1 {
+            onUpdate(connected, states)
+            lastConnection = connected
             lastStates = states
             emittedAt = now()
         }
@@ -437,6 +443,7 @@ final class CodexDesktopStatus {
     private var observer: DesktopStatusObserver?
     private var stopped = false
     private var receivedAt: TimeInterval = -.infinity
+    private var connected = false
     private var latestStates = [String: String]()
 
     init(socketURL: URL? = nil, directory: URL? = nil) {
@@ -455,18 +462,22 @@ final class CodexDesktopStatus {
     }
 
     var detail: String {
-        let current = states
-        return current.isEmpty ? "Codex 授权状态：实时通道未连接，未确认的授权不亮红灯"
-            : "Codex 授权状态：实时连接（\(current.count) 个会话）"
+        lock.lock(); defer { lock.unlock() }
+        guard connected, !stopped, desktopNow() - receivedAt < 6 else {
+            return "Codex 授权状态：实时通道未连接"
+        }
+        return latestStates.isEmpty ? "Codex 授权状态：通道已连接，等待桌面会话状态"
+            : "Codex 授权状态：实时连接（\(latestStates.count) 个会话）"
     }
 
     func startIfNeeded() {
         lock.lock(); defer { lock.unlock() }
         guard !stopped, observer == nil else { return }
-        let worker = DesktopStatusObserver(socketURL: socketURL, directory: directory) { [weak self] states in
+        let worker = DesktopStatusObserver(socketURL: socketURL, directory: directory) { [weak self] connected, states in
             guard let self = self else { return }
             self.lock.lock(); defer { self.lock.unlock() }
             guard !self.stopped else { return }
+            self.connected = connected
             self.latestStates = states
             self.receivedAt = desktopNow()
         }

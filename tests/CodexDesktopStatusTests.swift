@@ -273,7 +273,7 @@ struct CodexDesktopStatusTests {
         let fake = FakeTransport()
         var summary = [String: String]()
         let observer = DesktopStatusObserver(socketURL: root.appendingPathComponent("unused"), directory: root,
-            transport: fake, now: { fake.time }, onUpdate: { summary = $0 })
+            transport: fake, now: { fake.time }, onUpdate: { _, states in summary = states })
         try observer.synchronize()
         precondition(fake.discoveries == ["thread"], "active sessions must be discovered first, one per pass")
         var live = snapshot()
@@ -313,13 +313,15 @@ struct CodexDesktopStatusTests {
     static func testNativeMonitor() throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        try record("thread", state: "running", in: root)
         let server = try FixtureServer(in: root)
         defer { server.stop() }
         let monitor = CodexDesktopStatus(socketURL: server.path, directory: root)
         defer { monitor.stop() }
         monitor.startIfNeeded()
         monitor.startIfNeeded() // only one native worker may subscribe.
+        wait(until: { monitor.detail.contains("等待桌面会话状态") })
+        precondition(monitor.states.isEmpty)
+        try record("thread", state: "running", in: root)
         wait(until: { monitor.states[hash("thread")] == "attention" })
         precondition(monitor.detail.contains("实时连接"))
         precondition(server.receivedMethods.filter { $0 == "initialize" }.count == 1)
@@ -329,7 +331,7 @@ struct CodexDesktopStatusTests {
         wait(until: { monitor.states[hash("thread")] == "idle" })
         // A peer disconnect invalidates the old summary and reconnects on the native worker.
         server.dropConnection()
-        wait(until: { monitor.states.isEmpty })
+        wait(until: { monitor.states.isEmpty && monitor.detail.contains("未连接") })
         wait(until: { monitor.states[hash("thread")] == "attention" }, timeout: 5)
         server.enqueue(["type": "client-discovery-request", "requestId": "cannot-own"])
         wait(until: { server.receivedMethods.contains("client-discovery-response") })
